@@ -1,13 +1,12 @@
 /**
  * Lado cliente de la IA: reúne el contexto desde la base local, llama a
- * /api/ai y guarda el resultado. Si la IA no está disponible, la app sigue
- * funcionando con las preguntas locales.
+ * /api/ai y guarda el resultado. Sin IA, el diario sigue funcionando.
  */
-import { addDays, weekDays } from '../dates'
-import { db, saveAnalysis } from '../db'
-import { localQuestionsFor } from '../questions'
-import type { Analysis, DailyQuestion, DayKey, Reflection, WeekSummary } from '../types'
-import type { AIErrorCode, AIRequestBody, AIResponse, ContextReflection, MemoryContext } from './contract'
+import { addDays, parseDayKey, weekDays, weekStart } from '../dates'
+import { db, saveAnswersAndClosing, saveMentaxReflection } from '../db'
+import { localIdeasFor } from '../entries'
+import type { DayKey, Entry, MentaxClosing, MentaxReflection, WeekSummary } from '../types'
+import type { AIErrorCode, AIRequestBody, AIResponse, ContextEntry, MemoryContext } from './contract'
 
 export class AIUnavailableError extends Error {
   constructor(readonly code: AIErrorCode) {
@@ -16,16 +15,16 @@ export class AIUnavailableError extends Error {
 }
 
 export const AI_ERROR_MESSAGE: Record<AIErrorCode, string> = {
-  'not-configured': 'El análisis con IA todavía no está activado en esta versión de Mentax.',
+  'not-configured': 'La IA de Mentax todavía no está activada en esta versión.',
   'rate-limit': 'Has hecho muchas peticiones seguidas. Espera unos minutos y vuelve a intentarlo.',
   'bad-request': 'No se ha podido preparar la petición a la IA.',
-  failed: 'La IA no ha podido responder ahora mismo. Inténtalo de nuevo en un momento.',
+  failed: 'Mentax no ha podido responder ahora mismo. Inténtalo de nuevo en un momento.',
 }
 
 // Si el servidor no tiene IA configurada, no se vuelve a preguntar en esta sesión.
 let notConfigured = false
 
-async function callAI<T>(body: AIRequestBody, timeoutMs = 45_000): Promise<T> {
+async function callAI<T>(body: AIRequestBody, timeoutMs = 50_000): Promise<T> {
   if (notConfigured) throw new AIUnavailableError('not-configured')
   let res: Response
   try {
@@ -44,61 +43,86 @@ async function callAI<T>(body: AIRequestBody, timeoutMs = 45_000): Promise<T> {
 
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
 
-function toContext(r: Reflection, maxAnswer: number): ContextReflection {
-  return { date: r.date, mood: r.mood, answers: r.answers.map((a) => ({ question: a.question, answer: clip(a.answer.trim(), maxAnswer) })) }
+export function qaOf(entry: Pick<Entry, 'reflection' | 'answers'>): { pregunta: string; respuesta: string }[] {
+  return (entry.reflection?.preguntas ?? []).map((pregunta, i) => ({ pregunta, respuesta: entry.answers[i]?.trim() ?? '' }))
 }
 
-async function memory(): Promise<MemoryContext> {
+function toContext(e: Entry, maxText: number, maxAnswer = 300): ContextEntry {
+  const qa = qaOf(e).filter((x) => x.respuesta).map((x) => ({ pregunta: x.pregunta, respuesta: clip(x.respuesta, maxAnswer) }))
+  return { date: e.date, mood: e.mood, text: clip(e.text.trim(), maxText), ...(qa.length ? { qa } : {}), ...(e.closing?.aprendizaje ? { aprendizaje: e.closing.aprendizaje } : {}) }
+}
+
+async function memory(today: DayKey): Promise<MemoryContext> {
+  const thisWeek = parseDayKey(weekStart(today)).getTime()
   const [goals, learnings] = await Promise.all([db.goals.where('status').equals('active').toArray(), db.learnings.orderBy('createdAt').reverse().limit(10).toArray()])
-  return { goals: goals.slice(0, 8).map((g) => ({ title: g.title, progress: g.progress })), learnings: learnings.map((l) => l.text) }
-}
-
-async function recentReflections(before: DayKey, count: number, maxAnswer: number, excludeId?: string): Promise<ContextReflection[]> {
-  const list = await db.reflections.where('date').belowOrEqual(before).reverse().sortBy('createdAt')
-  return list
-    .filter((r) => r.id !== excludeId)
-    .slice(0, count)
-    .map((r) => toContext(r, maxAnswer))
-}
-
-// ── Preguntas del día ───────────────────────────────────
-
-export async function questionsForToday(today: DayKey): Promise<{ questions: DailyQuestion[]; source: 'ai' | 'local' }> {
-  const cached = await db.dailyQuestions.get(today)
-  if (cached) return cached
-  try {
-    const questions = await callAI<DailyQuestion[]>({ task: 'questions', input: { today, recent: await recentReflections(addDays(today, -1), 7, 400), ...(await memory()) } }, 15_000)
-    await db.dailyQuestions.put({ date: today, questions, source: 'ai', createdAt: Date.now() })
-    return { questions, source: 'ai' }
-  } catch {
-    return { questions: localQuestionsFor(today), source: 'local' }
+  return {
+    goals: goals.slice(0, 10).map((g) => ({ title: g.title, progress: g.progress, thisWeek: g.createdAt >= thisWeek })),
+    learnings: learnings.map((l) => l.text),
   }
 }
 
-// ── Análisis de una reflexión ───────────────────────────
+async function recentEntries(before: DayKey, count: number, maxText: number, excludeId?: string): Promise<ContextEntry[]> {
+  const list = await db.reflections.where('date').belowOrEqual(before).reverse().sortBy('createdAt')
+  return list
+    .filter((e) => e.id !== excludeId && e.text.trim())
+    .slice(0, count)
+    .map((e) => toContext(e, maxText))
+}
 
-export async function analyzeReflection(id: string): Promise<Analysis> {
-  const reflection = await db.reflections.get(id)
-  if (!reflection) throw new AIUnavailableError('bad-request')
-  const analysis = await callAI<Analysis>({
-    task: 'analysis',
-    input: { reflection: toContext(reflection, 1500), recent: await recentReflections(reflection.date, 6, 300, id), ...(await memory()) },
+const weekdayOf = (date: DayKey) => parseDayKey(date).toLocaleDateString('es-ES', { weekday: 'long' })
+
+// ── Reflexión de Mentax sobre la entrada ────────────────
+
+export async function reflectOnEntry(id: string): Promise<MentaxReflection> {
+  const entry = await db.reflections.get(id)
+  if (!entry || !entry.text.trim()) throw new AIUnavailableError('bad-request')
+  const reflection = await callAI<MentaxReflection>({
+    task: 'reflect',
+    input: { weekday: weekdayOf(entry.date), entry: toContext(entry, 6000), recent: await recentEntries(entry.date, 6, 500, id), ...(await memory(entry.date)) },
   })
-  await saveAnalysis(id, analysis)
-  return analysis
+  await saveMentaxReflection(id, reflection)
+  return reflection
+}
+
+// ── Cierre tras las respuestas ──────────────────────────
+
+export async function closeEntry(id: string, answers: string[]): Promise<MentaxClosing> {
+  const entry = await db.reflections.get(id)
+  if (!entry?.reflection) throw new AIUnavailableError('bad-request')
+  const qa = qaOf({ reflection: entry.reflection, answers }).map((x) => ({ pregunta: x.pregunta, respuesta: clip(x.respuesta, 2000) }))
+  const closing = await callAI<MentaxClosing>({
+    task: 'close',
+    input: { entry: { date: entry.date, mood: entry.mood, text: clip(entry.text, 6000) }, reflexion: entry.reflection.reflexion, qa, ...(await memory(entry.date)) },
+  })
+  await saveAnswersAndClosing(id, answers, closing)
+  return closing
+}
+
+// ── Ideas para escribir ─────────────────────────────────
+
+export async function ideasForToday(today: DayKey): Promise<{ ideas: string[]; source: 'ai' | 'local' }> {
+  const cached = await db.dailyIdeas.get(today)
+  if (cached) return cached
+  try {
+    const ideas = await callAI<string[]>({ task: 'ideas', input: { today, recent: await recentEntries(addDays(today, -1), 5, 400), ...(await memory(today)) } }, 15_000)
+    await db.dailyIdeas.put({ date: today, ideas, source: 'ai', createdAt: Date.now() })
+    return { ideas, source: 'ai' }
+  } catch {
+    return { ideas: localIdeasFor(today), source: 'local' }
+  }
 }
 
 // ── Resumen semanal ─────────────────────────────────────
 
-export async function summarizeWeek(weekStart: DayKey): Promise<WeekSummary> {
-  const days = weekDays(weekStart)
-  const reflections = await db.reflections.where('date').between(days[0], days[6], true, true).sortBy('createdAt')
-  if (reflections.length === 0) throw new AIUnavailableError('bad-request')
+export async function summarizeWeek(start: DayKey): Promise<WeekSummary> {
+  const days = weekDays(start)
+  const entries = (await db.reflections.where('date').between(days[0], days[6], true, true).sortBy('createdAt')).filter((e) => e.text.trim())
+  if (entries.length === 0) throw new AIUnavailableError('bad-request')
   const result = await callAI<Pick<WeekSummary, 'resumen' | 'aprendizajes' | 'areas'>>({
     task: 'week',
-    input: { weekStart, reflections: reflections.slice(-14).map((r) => toContext(r, 500)), ...(await memory()) },
+    input: { weekStart: start, entries: entries.slice(-14).map((e) => toContext(e, 1200)), ...(await memory(start)) },
   })
-  const summary: WeekSummary = { weekStart, ...result, reflectionCount: reflections.length, createdAt: Date.now() }
+  const summary: WeekSummary = { weekStart: start, ...result, reflectionCount: entries.length, createdAt: Date.now() }
   await db.weekSummaries.put(summary)
   return summary
 }

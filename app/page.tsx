@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppData } from '@/components/mentax/data'
 import type { Navigate, Route } from '@/components/mentax/nav'
 import { Home } from '@/components/mentax/screens/home'
-import { Brief, Reflection } from '@/components/mentax/screens/reflection'
-import { Analysis, Detail, Reflections } from '@/components/mentax/screens/reflections'
+import { Write } from '@/components/mentax/screens/write'
+import { Diary, EntryView } from '@/components/mentax/screens/diary'
 import { Week } from '@/components/mentax/screens/week'
 import { GoalEditor, Goals } from '@/components/mentax/screens/goals'
 import { Profile } from '@/components/mentax/screens/profile'
@@ -25,9 +25,10 @@ export default function Page() {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
-  const navigate: Navigate = useCallback((screen, id) => {
+  const navigate: Navigate = useCallback((screen, id, options) => {
     const next: Route = { screen, id }
-    history.pushState(next, '')
+    if (options?.replace) history.replaceState(next, '')
+    else history.pushState(next, '')
     setRoute(next)
     window.scrollTo(0, 0)
   }, [])
@@ -41,15 +42,12 @@ export default function Page() {
   if (!data) return <main className="app-shell"><div className="phone-frame"><div className="screen"><Loading text="Cargando…" /></div></div></main>
 
   const { screen, id } = route
-  const reflection = id ? data.reflections.find((r) => r.id === id) : undefined
   const props = { data, navigate, notify }
   const content = {
     home: <Home {...props} />,
-    reflection: <Reflection key={id ?? 'new'} editId={id} today={data.today} navigate={navigate} notify={notify} />,
-    brief: <Brief key={id ?? 'new'} editId={id} today={data.today} navigate={navigate} notify={notify} />,
-    reflections: <Reflections {...props} />,
-    detail: <Detail reflection={reflection} navigate={navigate} notify={notify} />,
-    analysis: <Analysis reflection={reflection} learnings={data.learnings.map((l) => l.text)} navigate={navigate} notify={notify} />,
+    write: <Write key={id ?? 'new'} editId={id} today={data.today} navigate={navigate} notify={notify} />,
+    diary: <Diary {...props} />,
+    entry: <EntryView key={id} entry={id ? data.entries.find((e) => e.id === id) : undefined} {...props} />,
     week: <Week {...props} />,
     goals: <Goals {...props} />,
     goal: <GoalEditor key={id ?? 'new'} goal={id ? data.goals.find((g) => g.id === id) : undefined} navigate={navigate} notify={notify} />,

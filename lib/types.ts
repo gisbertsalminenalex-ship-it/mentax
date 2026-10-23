@@ -3,53 +3,45 @@
 /** Fecha local en formato `YYYY-MM-DD`. */
 export type DayKey = string
 
-/** Qué busca cada pregunta diaria. La forma de preguntarlo rota; el objetivo, no. */
-export type QuestionObjective = 'bien' | 'dificultad' | 'interior'
-
-export interface DailyQuestion {
-  objective: QuestionObjective
-  text: string
-  help: string
-  hints: string[]
-}
-
-export interface DailyQuestionSet {
-  date: DayKey
-  questions: DailyQuestion[]
-  source: 'ai' | 'local'
-  createdAt: number
-}
-
-export interface Answer {
-  question: string
-  answer: string
-  objective?: QuestionObjective
-}
-
 /** 1 = Mal … 5 = Muy bien. */
 export type Mood = 1 | 2 | 3 | 4 | 5
 
-export interface Analysis {
+/** Lo primero que dice Mentax al leer la entrada del diario. */
+export interface MentaxReflection {
   title: string
-  respuesta: string
-  observacion: string
-  aprendizaje: string
-  sugerencia: string
+  reflexion: string
+  /** Preguntas para seguir reflexionando (normalmente dos). */
+  preguntas: string[]
+  /** Objetivos que el usuario ha mencionado en el texto, para proponer añadirlos. */
+  objetivos: string[]
   /** Solo cuando lo escrito apunta a algo serio; si no, null. */
   ayudaProfesional: string | null
   createdAt: number
 }
 
-export interface Reflection {
+/** El comentario con el que Mentax cierra el día, tras leer las respuestas. */
+export interface MentaxClosing {
+  comentario: string
+  aprendizaje: string
+  ayudaProfesional: string | null
+  createdAt: number
+}
+
+/** Una entrada del diario: lo que escribe el usuario y la conversación con Mentax. */
+export interface Entry {
   id: string
   date: DayKey
-  mode: 'full' | 'brief'
-  answers: Answer[]
+  text: string
   mood?: Mood
   title: string
   favorite: boolean
   durationSec: number
-  analysis?: Analysis
+  reflection?: MentaxReflection
+  /** Respuestas a `reflection.preguntas`, en el mismo orden. */
+  answers: string[]
+  closing?: MentaxClosing
+  /** Objetivos detectados que el usuario ya ha añadido o descartado. */
+  handledGoals: string[]
   createdAt: number
   updatedAt: number
 }
@@ -63,6 +55,8 @@ export interface Goal {
   progress: number
   status: 'active' | 'completed'
   tone: GoalTone
+  /** Entrada del diario de la que salió, si la detectó Mentax. */
+  entryId?: string
   createdAt: number
   updatedAt: number
   completedAt?: number
@@ -82,6 +76,14 @@ export interface WeekSummary {
   aprendizajes: string[]
   areas: string[]
   reflectionCount: number
+  createdAt: number
+}
+
+/** Ideas para escribir del día (las sugiere la IA o el banco local). */
+export interface DailyIdeas {
+  date: DayKey
+  ideas: string[]
+  source: 'ai' | 'local'
   createdAt: number
 }
 

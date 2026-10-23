@@ -3,9 +3,9 @@
  * de una tarea, llama a Cloudflare y devuelve la salida ya limpia. No guarda nada.
  */
 import { NextResponse } from 'next/server'
-import { cleanAnalysis, cleanQuestions, cleanWeek, MAX_BODY_BYTES, parseAIRequest, type AIErrorCode, type AIResponse } from '@/lib/ai/contract'
+import { cleanClosing, cleanIdeas, cleanReflection, cleanWeek, MAX_BODY_BYTES, parseAIRequest, type AIErrorCode, type AIResponse } from '@/lib/ai/contract'
 import { AICallError, readCloudflareConfig, runCloudflare } from '@/lib/ai/cloudflare'
-import { analysisPrompt, questionsPrompt, weekPrompt } from '@/lib/ai/prompts'
+import { closePrompt, ideasPrompt, reflectPrompt, weekPrompt } from '@/lib/ai/prompts'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -45,8 +45,9 @@ export async function POST(request: Request) {
 
   try {
     let data: unknown
-    if (body.task === 'questions') data = cleanQuestions(await runCloudflare(config, questionsPrompt(body.input)))
-    else if (body.task === 'analysis') data = cleanAnalysis(await runCloudflare(config, analysisPrompt(body.input)))
+    if (body.task === 'reflect') data = cleanReflection(await runCloudflare(config, reflectPrompt(body.input)))
+    else if (body.task === 'close') data = cleanClosing(await runCloudflare(config, closePrompt(body.input)))
+    else if (body.task === 'ideas') data = cleanIdeas(await runCloudflare(config, ideasPrompt(body.input)))
     else data = cleanWeek(await runCloudflare(config, weekPrompt(body.input)))
     if (!data) return fail('failed', 502)
     return NextResponse.json<AIResponse<unknown>>({ ok: true, data })

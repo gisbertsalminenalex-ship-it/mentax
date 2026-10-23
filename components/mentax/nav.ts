@@ -1,11 +1,12 @@
-export type Screen = 'home' | 'reflection' | 'reflections' | 'detail' | 'week' | 'goals' | 'goal' | 'analysis' | 'brief' | 'profile'
+export type Screen = 'home' | 'write' | 'diary' | 'entry' | 'week' | 'goals' | 'goal' | 'profile'
 
 export interface Route {
   screen: Screen
-  /** Reflexión u objetivo al que se refiere la pantalla. */
+  /** Entrada u objetivo al que se refiere la pantalla. */
   id?: string
 }
 
-export type Navigate = (screen: Screen, id?: string) => void
+/** `replace` sustituye la pantalla actual en el historial (p. ej. el editor tras guardar). */
+export type Navigate = (screen: Screen, id?: string, options?: { replace?: boolean }) => void
 
 export type Notify = (message: string) => void

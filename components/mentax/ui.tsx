@@ -1,6 +1,6 @@
 'use client'
 
-import { ArrowLeft, ChevronRight, CalendarDays, Compass, FileText, Target, UserRound } from 'lucide-react'
+import { ArrowLeft, BookOpen, ChevronRight, CalendarDays, Compass, Target, UserRound } from 'lucide-react'
 import type { Mood } from '@/lib/types'
 import type { Navigate, Screen } from './nav'
 
@@ -18,7 +18,7 @@ export function Header({ title, onBack, action }: { title: string; onBack?: () =
 
 const navItems: { id: Screen; label: string; icon: typeof Compass }[] = [
   { id: 'home', label: 'Inicio', icon: Compass },
-  { id: 'reflections', label: 'Reflexiones', icon: FileText },
+  { id: 'diary', label: 'Diario', icon: BookOpen },
   { id: 'week', label: 'Semana', icon: CalendarDays },
   { id: 'goals', label: 'Objetivos', icon: Target },
   { id: 'profile', label: 'Perfil', icon: UserRound },
@@ -45,7 +45,7 @@ export const MOODS: { value: Mood; emoji: string; label: string }[] = [
 export const moodOf = (value?: Mood) => MOODS.find((m) => m.value === value)
 
 export function MoodPicker({ value, onChange }: { value?: Mood; onChange: (mood: Mood) => void }) {
-  return <div className="mood-picker"><b>¿Cómo te sientes en general hoy?</b><div>{MOODS.map((m) => <button type="button" key={m.value} className={value === m.value ? 'selected' : ''} onClick={() => onChange(m.value)} aria-pressed={value === m.value}><span>{m.emoji}</span><small>{m.label}</small></button>)}</div></div>
+  return <div className="mood-picker"><b>¿Cómo te sientes hoy?</b><div>{MOODS.map((m) => <button type="button" key={m.value} className={value === m.value ? 'selected' : ''} onClick={() => onChange(m.value)} aria-pressed={value === m.value}><span>{m.emoji}</span><small>{m.label}</small></button>)}</div></div>
 }
 
 export function Loading({ text }: { text: string }) {

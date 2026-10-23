@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { addDays, currentStreak, dayKey, formatLong, weekDays, weekStart } from './dates'
-import { deriveTitle, localQuestionsFor, OBJECTIVES } from './questions'
-import { cleanAnalysis, cleanQuestions, cleanWeek, parseAIRequest } from './ai/contract'
+import { deriveTitle, localIdeasFor, migrateEntry, stageOf } from './entries'
+import { cleanClosing, cleanIdeas, cleanReflection, cleanWeek, parseAIRequest } from './ai/contract'
 import { parseBackup } from './backup'
 import { parseJSONOutput, readCloudflareConfig } from './ai/cloudflare'
-import { analysisPrompt } from './ai/prompts'
+import { closePrompt, reflectPrompt } from './ai/prompts'
 
 describe('fechas', () => {
   it('dayKey usa la fecha local', () => {
@@ -30,68 +30,87 @@ describe('racha', () => {
   it('cuenta días seguidos hasta hoy', () => {
     assert.equal(currentStreak(['2024-05-19', '2024-05-20', '2024-05-21'], '2024-05-21'), 3)
   })
-  it('sigue viva desde ayer si hoy aún no hay reflexión', () => {
+  it('sigue viva desde ayer si hoy aún no hay entrada', () => {
     assert.equal(currentStreak(['2024-05-19', '2024-05-20'], '2024-05-21'), 2)
   })
-  it('se rompe con un día sin reflexión', () => {
+  it('se rompe con un día sin entrada', () => {
     assert.equal(currentStreak(['2024-05-18', '2024-05-21'], '2024-05-21'), 1)
     assert.equal(currentStreak(['2024-05-18'], '2024-05-21'), 0)
   })
-  it('varias reflexiones el mismo día cuentan una vez', () => {
-    assert.equal(currentStreak(['2024-05-21', '2024-05-21'], '2024-05-21'), 1)
-  })
 })
 
-describe('preguntas locales', () => {
-  it('siempre una por objetivo y en orden', () => {
-    for (let i = 0; i < 20; i++) {
-      assert.deepEqual(localQuestionsFor(addDays('2024-05-01', i)).map((q) => q.objective), OBJECTIVES)
-    }
+describe('entradas del diario', () => {
+  it('deriveTitle resume la primera frase', () => {
+    assert.equal(deriveTitle('hoy he quedado con amigos. Luego cené.'), 'Hoy he quedado con amigos')
+    assert.equal(deriveTitle('Lunes de trabajo\nMucho lío'), 'Lunes de trabajo')
+    assert.equal(deriveTitle('uno dos tres cuatro cinco seis siete ocho nueve'), 'Uno dos tres cuatro cinco seis siete…')
+    assert.equal(deriveTitle('  '), 'Entrada del diario')
   })
-  it('rotan de un día a otro', () => {
-    assert.notDeepEqual(localQuestionsFor('2024-05-20').map((q) => q.text), localQuestionsFor('2024-05-21').map((q) => q.text))
+  it('las ideas locales son tres, distintas y rotan cada día', () => {
+    const a = localIdeasFor('2024-05-20')
+    assert.equal(new Set(a).size, 3)
+    assert.notDeepEqual(a, localIdeasFor('2024-05-21'))
   })
-  it('deriveTitle resume la primera respuesta', () => {
-    assert.equal(deriveTitle([{ question: 'q', answer: '' }, { question: 'q', answer: 'he quedado con amigos. Luego cené.' }]), 'He quedado con amigos')
-    assert.equal(deriveTitle([{ question: 'q', answer: 'uno dos tres cuatro cinco seis siete ocho nueve' }]), 'Uno dos tres cuatro cinco seis siete…')
-    assert.equal(deriveTitle([]), 'Reflexión')
+  it('stageOf sigue la conversación', () => {
+    const reflection = { title: '', reflexion: 'r', preguntas: ['p'], objetivos: [], ayudaProfesional: null, createdAt: 1 }
+    assert.equal(stageOf({}), 'written')
+    assert.equal(stageOf({ reflection }), 'questions')
+    assert.equal(stageOf({ reflection, closing: { comentario: 'c', aprendizaje: 'a', ayudaProfesional: null, createdAt: 1 } }), 'closed')
+  })
+  it('migra las reflexiones guiadas de la primera versión', () => {
+    const e = migrateEntry({
+      id: 'r1', date: '2024-05-20', mode: 'full', mood: 4, title: 'Un buen día', favorite: true, durationSec: 120,
+      answers: [{ question: '¿Qué ha ido bien?', answer: 'Paseo' }, { question: '¿Dificultades?', answer: '' }],
+      analysis: { title: 'Un buen día', respuesta: 'Te leo', observacion: 'Obs.', aprendizaje: 'Pasear me calma', sugerencia: 'Sug.', ayudaProfesional: null, createdAt: 5 },
+      createdAt: 1, updatedAt: 2,
+    })
+    assert.equal(e.text, '¿Qué ha ido bien?\nPaseo')
+    assert.equal(e.reflection?.reflexion, 'Te leo')
+    assert.deepEqual(e.reflection?.preguntas, [])
+    assert.equal(e.closing?.comentario, 'Obs. Sug.')
+    assert.equal(e.closing?.aprendizaje, 'Pasear me calma')
+    assert.equal(stageOf(e), 'closed')
+    assert.equal(e.favorite, true)
+    assert.deepEqual(e.handledGoals, [])
+  })
+  it('las entradas nuevas pasan sin cambios', () => {
+    const entry = { id: 'e', date: '2024-05-20', text: 'Hola', title: 'Hola', favorite: false, durationSec: 0, answers: ['x'], handledGoals: ['y'], createdAt: 1, updatedAt: 1 }
+    assert.deepEqual(migrateEntry(entry), entry)
   })
 })
 
 describe('contrato IA', () => {
-  const memory = { goals: [{ title: 'Dormir mejor', progress: 30 }], learnings: ['Me siento mejor cuando paseo'] }
-  const reflection = { date: '2024-05-20', mood: 4 as const, answers: [{ question: '¿Qué ha ido bien?', answer: 'Paseo' }] }
+  const memory = { goals: [{ title: 'Dormir mejor', progress: 30, thisWeek: true }], learnings: ['Me siento mejor cuando paseo'] }
+  const entry = { date: '2024-05-20', mood: 4 as const, text: 'Hoy he paseado. Esta semana quiero ir 3 días al gimnasio.' }
+  const qa = [{ pregunta: '¿Qué te dio el paseo?', respuesta: 'Calma' }]
 
   it('acepta peticiones bien formadas y rechaza las demás', () => {
-    assert.ok(parseAIRequest({ task: 'questions', input: { today: '2024-05-21', recent: [reflection], ...memory } }))
-    assert.ok(parseAIRequest({ task: 'analysis', input: { reflection, recent: [], ...memory } }))
-    assert.ok(parseAIRequest({ task: 'week', input: { weekStart: '2024-05-20', reflections: [reflection], ...memory } }))
-    assert.equal(parseAIRequest({ task: 'week', input: { weekStart: '2024-05-20', reflections: [], ...memory } }), null)
-    assert.equal(parseAIRequest({ task: 'otra', input: memory }), null)
-    assert.equal(parseAIRequest({ task: 'analysis', input: { reflection: { date: 1 }, recent: [], ...memory } }), null)
+    assert.ok(parseAIRequest({ task: 'reflect', input: { weekday: 'lunes', entry, recent: [], ...memory } }))
+    assert.ok(parseAIRequest({ task: 'close', input: { entry, reflexion: 'r', qa, ...memory } }))
+    assert.ok(parseAIRequest({ task: 'ideas', input: { today: '2024-05-21', recent: [entry], ...memory } }))
+    assert.ok(parseAIRequest({ task: 'week', input: { weekStart: '2024-05-20', entries: [entry], ...memory } }))
+    assert.equal(parseAIRequest({ task: 'reflect', input: { weekday: 'lunes', entry: { ...entry, text: '  ' }, recent: [], ...memory } }), null)
+    assert.equal(parseAIRequest({ task: 'close', input: { entry, reflexion: 'r', qa: [], ...memory } }), null)
+    assert.equal(parseAIRequest({ task: 'week', input: { weekStart: '2024-05-20', entries: [], ...memory } }), null)
+    assert.equal(parseAIRequest({ task: 'questions', input: memory }), null)
     assert.equal(parseAIRequest('hola'), null)
   })
 
-  it('cleanQuestions exige los tres objetivos y los ordena', () => {
-    const raw = { questions: [
-      { objective: 'interior', text: '¿Qué sentiste?', help: 'h', hints: ['a', 'b', 'c', 'd'] },
-      { objective: 'bien', text: '¿Qué fue bien?', help: 'h', hints: [] },
-      { objective: 'dificultad', text: '¿Qué costó?', help: 'h', hints: ['x'] },
-    ] }
-    const clean = cleanQuestions(raw)!
-    assert.deepEqual(clean.map((q) => q.objective), OBJECTIVES)
-    assert.equal(clean[2].hints.length, 3)
-    assert.equal(cleanQuestions({ questions: raw.questions.slice(1) }), null)
-    assert.equal(cleanQuestions(null), null)
+  it('cleanReflection exige reflexión y preguntas, y deja la ayuda vacía en null', () => {
+    const r = cleanReflection({ title: 'Paseo y planes.', reflexion: 'Te leo.', preguntas: ['¿A?', '¿B?', '¿C?', '¿D?'], objetivos: ['Ir 3 días al gimnasio', 'Ir 3 días al gimnasio'], ayudaProfesional: '' }, 1)!
+    assert.equal(r.title, 'Paseo y planes')
+    assert.equal(r.preguntas.length, 3)
+    assert.deepEqual(r.objetivos, ['Ir 3 días al gimnasio'])
+    assert.equal(r.ayudaProfesional, null)
+    assert.equal(cleanReflection({ reflexion: 'x', preguntas: [] }), null)
+    assert.equal(cleanReflection({ preguntas: ['¿A?'] }), null)
   })
 
-  it('cleanAnalysis convierte la ayuda vacía en null', () => {
-    const a = cleanAnalysis({ title: 'Un buen día.', respuesta: 'Te leo.', observacion: 'o', aprendizaje: 'a', sugerencia: 's', ayudaProfesional: '  ' }, 1)!
-    assert.equal(a.ayudaProfesional, null)
-    assert.equal(a.title, 'Un buen día')
-    assert.equal(cleanAnalysis({ title: 'x' }), null)
-    const serious = cleanAnalysis({ respuesta: 'r', ayudaProfesional: 'Habla con un profesional.' })!
-    assert.equal(serious.ayudaProfesional, 'Habla con un profesional.')
+  it('cleanClosing y cleanIdeas', () => {
+    assert.equal(cleanClosing({ comentario: 'Bien.', aprendizaje: 'a', ayudaProfesional: 'Habla con alguien.' })!.ayudaProfesional, 'Habla con alguien.')
+    assert.equal(cleanClosing({ aprendizaje: 'a' }), null)
+    assert.deepEqual(cleanIdeas({ ideas: ['a', 'b', 'c', 'd'] }), ['a', 'b', 'c'])
+    assert.equal(cleanIdeas({ ideas: [] }), null)
   })
 
   it('cleanWeek limita listas', () => {
@@ -101,10 +120,12 @@ describe('contrato IA', () => {
     assert.equal(cleanWeek({ resumen: '', aprendizajes: [] }), null)
   })
 
-  it('el prompt de análisis encierra lo escrito por el usuario en <datos>', () => {
-    const p = analysisPrompt({ reflection, recent: [], ...memory })
-    assert.match(p.user, /<datos>[\s\S]*Paseo[\s\S]*<\/datos>/)
+  it('los prompts encierran lo escrito por el usuario en <datos>', () => {
+    const p = reflectPrompt({ weekday: 'domingo', entry, recent: [], ...memory })
+    assert.match(p.user, /<datos>[\s\S]*gimnasio[\s\S]*<\/datos>/)
+    assert.match(p.user, /propuesto esta semana/)
     assert.match(p.system, /ayudaProfesional/)
+    assert.match(closePrompt({ entry, reflexion: 'r', qa, ...memory }).user, /<datos>[\s\S]*Calma[\s\S]*<\/datos>/)
   })
 
   it('parseJSONOutput tolera bloques ```json', () => {
@@ -118,9 +139,10 @@ describe('contrato IA', () => {
 })
 
 describe('copia de seguridad', () => {
-  const valid = { app: 'mentax', version: 1, exportedAt: '2024-05-21T00:00:00Z', data: { profile: null, reflections: [{ id: 'r', date: '2024-05-20', answers: [] }], goals: [{ id: 'g', title: 'x' }], learnings: [], weekSummaries: [] } }
-  it('acepta una copia válida', () => {
+  const valid = { app: 'mentax', version: 2, exportedAt: '2024-05-21T00:00:00Z', data: { profile: null, reflections: [{ id: 'r', date: '2024-05-20', text: 'hola' }], goals: [{ id: 'g', title: 'x' }], learnings: [], weekSummaries: [] } }
+  it('acepta copias de esta versión y de la primera', () => {
     assert.equal(parseBackup(JSON.stringify(valid)).data.reflections.length, 1)
+    assert.ok(parseBackup(JSON.stringify({ ...valid, version: 1, data: { ...valid.data, reflections: [{ id: 'r', date: '2024-05-20', answers: [] }] } })))
   })
   it('rechaza archivos que no son de Mentax o están dañados', () => {
     assert.throws(() => parseBackup('no json'), /no es una copia/)

@@ -1,11 +1,12 @@
 /**
  * Copia de seguridad: exporta todos los datos a un JSON y lo restaura.
- * Las preguntas diarias no entran (se regeneran solas).
+ * Las ideas del día no entran (se regeneran solas).
  */
 import { db } from './db'
-import type { Goal, Learning, Profile, Reflection, WeekSummary } from './types'
+import { migrateEntry } from './entries'
+import type { Entry, Goal, Learning, Profile, WeekSummary } from './types'
 
-export const BACKUP_VERSION = 1
+export const BACKUP_VERSION = 2
 
 export interface Backup {
   app: 'mentax'
@@ -13,7 +14,7 @@ export interface Backup {
   exportedAt: string
   data: {
     profile: Profile | null
-    reflections: Reflection[]
+    reflections: Entry[]
     goals: Goal[]
     learnings: Learning[]
     weekSummaries: WeekSummary[]
@@ -53,7 +54,7 @@ export function parseBackup(text: string): Backup {
     if (!Array.isArray(data[key]) || !(data[key] as unknown[]).every(isObject)) throw new Error('La copia de seguridad está incompleta o dañada.')
   }
   const reflections = data.reflections as Record<string, unknown>[]
-  if (!reflections.every((r) => typeof r.id === 'string' && typeof r.date === 'string' && Array.isArray(r.answers))) {
+  if (!reflections.every((r) => typeof r.id === 'string' && typeof r.date === 'string' && (typeof r.text === 'string' || Array.isArray(r.answers)))) {
     throw new Error('La copia de seguridad está incompleta o dañada.')
   }
   const goals = data.goals as Record<string, unknown>[]
@@ -64,10 +65,11 @@ export function parseBackup(text: string): Backup {
 /** Sustituye todos los datos actuales por los de la copia. */
 export async function restoreBackup(backup: Backup): Promise<void> {
   const { profile, reflections, goals, learnings, weekSummaries } = backup.data
-  await db.transaction('rw', [db.reflections, db.goals, db.learnings, db.weekSummaries, db.settings, db.dailyQuestions], async () => {
-    await Promise.all([db.reflections.clear(), db.goals.clear(), db.learnings.clear(), db.weekSummaries.clear(), db.settings.clear(), db.dailyQuestions.clear()])
+  await db.transaction('rw', [db.reflections, db.goals, db.learnings, db.weekSummaries, db.settings, db.dailyIdeas], async () => {
+    await Promise.all([db.reflections.clear(), db.goals.clear(), db.learnings.clear(), db.weekSummaries.clear(), db.settings.clear(), db.dailyIdeas.clear()])
     if (profile) await db.settings.put({ key: 'profile', value: profile })
-    await db.reflections.bulkPut(reflections)
+    // Las copias de la primera versión traen reflexiones guiadas: se convierten al diario.
+    await db.reflections.bulkPut(reflections.map(migrateEntry))
     await db.goals.bulkPut(goals)
     await db.learnings.bulkPut(learnings)
     await db.weekSummaries.bulkPut(weekSummaries)

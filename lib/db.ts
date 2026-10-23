@@ -1,10 +1,10 @@
 /**
  * Base de datos local (Dexie sobre IndexedDB). Nada sale del dispositivo
- * salvo lo que se envía a la IA al pedir un análisis.
+ * salvo lo que se envía a la IA al pedir una reflexión o un resumen.
  */
 import Dexie, { type Table } from 'dexie'
-import { deriveTitle } from './questions'
-import type { Analysis, DailyQuestionSet, DayKey, Goal, GoalTone, Learning, Profile, Reflection, WeekSummary } from './types'
+import { deriveTitle, migrateEntry } from './entries'
+import type { DailyIdeas, DayKey, Entry, Goal, GoalTone, Learning, MentaxClosing, MentaxReflection, Mood, Profile, WeekSummary } from './types'
 
 interface SettingEntry {
   key: string
@@ -12,11 +12,12 @@ interface SettingEntry {
 }
 
 class MentaxDB extends Dexie {
-  reflections!: Table<Reflection, string>
+  /** Entradas del diario (la tabla conserva el nombre de la primera versión). */
+  reflections!: Table<Entry, string>
   goals!: Table<Goal, string>
   learnings!: Table<Learning, string>
   weekSummaries!: Table<WeekSummary, DayKey>
-  dailyQuestions!: Table<DailyQuestionSet, DayKey>
+  dailyIdeas!: Table<DailyIdeas, DayKey>
   settings!: Table<SettingEntry, string>
 
   constructor() {
@@ -29,6 +30,12 @@ class MentaxDB extends Dexie {
       dailyQuestions: 'date',
       settings: 'key',
     })
+    // v2: diario libre. Las reflexiones guiadas pasan a ser entradas del diario.
+    this.version(2)
+      .stores({ dailyQuestions: null, dailyIdeas: 'date' })
+      .upgrade((tx) => tx.table('reflections').toCollection().modify((r, ref) => {
+        ref.value = migrateEntry(r)
+      }))
   }
 }
 
@@ -49,52 +56,76 @@ export async function saveProfile(profile: Profile): Promise<void> {
   await db.settings.put({ key: 'profile', value: { name: profile.name.trim(), tagline: profile.tagline.trim() } })
 }
 
-// ── Reflexiones ─────────────────────────────────────────
+// ── Diario ──────────────────────────────────────────────
 
-export function listReflections(): Promise<Reflection[]> {
+export function listEntries(): Promise<Entry[]> {
   return db.reflections.orderBy('createdAt').reverse().toArray()
 }
 
-export async function reflectionForDay(date: DayKey, mode: Reflection['mode'] = 'full'): Promise<Reflection | undefined> {
-  const sameDay = await db.reflections.where('date').equals(date).toArray()
-  return sameDay.find((r) => r.mode === mode)
+export async function entryForDay(date: DayKey): Promise<Entry | undefined> {
+  return db.reflections.where('date').equals(date).first()
 }
 
-export type ReflectionDraft = Pick<Reflection, 'date' | 'mode' | 'answers' | 'mood'> & { durationSec: number }
+export interface EntryDraft {
+  date: DayKey
+  text: string
+  mood?: Mood
+  durationSec: number
+}
 
-/** Crea la reflexión o, si se pasa `id`, la actualiza conservando favorito y tiempo acumulado. */
-export async function saveReflection(draft: ReflectionDraft, id?: string): Promise<string> {
+/**
+ * Crea la entrada o, si se pasa `id`, la actualiza. Si el texto cambia, la
+ * conversación con Mentax ya no corresponde y se descarta.
+ */
+export async function saveEntry(draft: EntryDraft, id?: string): Promise<string> {
   const now = Date.now()
   const existing = id ? await db.reflections.get(id) : undefined
-  const answersChanged = existing && JSON.stringify(existing.answers) !== JSON.stringify(draft.answers)
-  const reflection: Reflection = {
+  const text = draft.text.trim()
+  const keepConversation = existing && existing.text === text
+  const entry: Entry = {
     id: existing?.id ?? newId(),
     date: existing?.date ?? draft.date,
-    mode: draft.mode,
-    answers: draft.answers,
+    text,
     mood: draft.mood,
-    // Si el texto cambia, el análisis anterior ya no corresponde.
-    title: existing?.analysis && !answersChanged ? existing.title : deriveTitle(draft.answers),
+    title: keepConversation && existing.reflection?.title ? existing.title : deriveTitle(text),
     favorite: existing?.favorite ?? false,
     durationSec: (existing?.durationSec ?? 0) + draft.durationSec,
-    analysis: answersChanged ? undefined : existing?.analysis,
+    reflection: keepConversation ? existing.reflection : undefined,
+    answers: keepConversation ? existing.answers : [],
+    closing: keepConversation ? existing.closing : undefined,
+    handledGoals: keepConversation ? existing.handledGoals : [],
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   }
-  await db.reflections.put(reflection)
-  return reflection.id
+  await db.reflections.put(entry)
+  return entry.id
 }
 
 export async function toggleFavorite(id: string): Promise<void> {
-  const r = await db.reflections.get(id)
-  if (r) await db.reflections.update(id, { favorite: !r.favorite })
+  const e = await db.reflections.get(id)
+  if (e) await db.reflections.update(id, { favorite: !e.favorite })
 }
 
-export async function saveAnalysis(id: string, analysis: Analysis): Promise<void> {
-  await db.reflections.update(id, analysis.title ? { analysis, title: analysis.title } : { analysis })
+/** Guarda la reflexión de Mentax; empieza de cero las respuestas y el cierre. */
+export async function saveMentaxReflection(id: string, reflection: MentaxReflection): Promise<void> {
+  await db.reflections.update(id, { reflection, answers: [], closing: undefined, ...(reflection.title ? { title: reflection.title } : {}), updatedAt: Date.now() })
 }
 
-export async function deleteReflection(id: string): Promise<void> {
+export async function saveAnswersAndClosing(id: string, answers: string[], closing: MentaxClosing): Promise<void> {
+  await db.reflections.update(id, { answers, closing, updatedAt: Date.now() })
+}
+
+export async function saveAnswers(id: string, answers: string[]): Promise<void> {
+  await db.reflections.update(id, { answers, updatedAt: Date.now() })
+}
+
+/** Marca un objetivo detectado como añadido o descartado para no volver a proponerlo. */
+export async function markGoalHandled(id: string, goal: string): Promise<void> {
+  const e = await db.reflections.get(id)
+  if (e && !e.handledGoals.includes(goal)) await db.reflections.update(id, { handledGoals: [...e.handledGoals, goal] })
+}
+
+export async function deleteEntry(id: string): Promise<void> {
   await db.transaction('rw', db.reflections, db.learnings, async () => {
     await db.reflections.delete(id)
     await db.learnings.where('reflectionId').equals(id).delete()
@@ -105,11 +136,11 @@ export async function deleteReflection(id: string): Promise<void> {
 
 const TONES: GoalTone[] = ['violet', 'mint', 'pink', 'peach']
 
-export async function createGoal(title: string, description: string, progress: number): Promise<string> {
+export async function createGoal(title: string, description: string, progress: number, entryId?: string): Promise<string> {
   const now = Date.now()
   const count = await db.goals.count()
   const id = newId()
-  await db.goals.put({ id, title: title.trim(), description: description.trim(), progress: clampProgress(progress), status: 'active', tone: TONES[count % TONES.length], createdAt: now, updatedAt: now })
+  await db.goals.put({ id, title: title.trim(), description: description.trim(), progress: clampProgress(progress), status: 'active', tone: TONES[count % TONES.length], entryId, createdAt: now, updatedAt: now })
   return id
 }
 
