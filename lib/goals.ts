@@ -36,6 +36,29 @@ export function guessTracking(title: string): GoalTracking {
   return MANUAL
 }
 
+const STOPWORDS = new Set(['a', 'al', 'el', 'la', 'los', 'las', 'de', 'del', 'en', 'un', 'una', 'mas', 'mi', 'mis', 'por', 'cada', 'y', 'que', 'me', 'se'])
+
+/** Palabras con contenido de un objetivo, sin tildes ni números. */
+function keywords(title: string): string[] {
+  return title
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .split(/[^a-zñ]+/)
+    .filter((w) => w.length > 1 && !STOPWORDS.has(w) && !(w in NUMBER_WORDS))
+}
+
+/**
+ * Dos objetivos tratan de lo mismo si empiezan por la misma actividad
+ * («Meditar 10 minutos» y «Meditar cada día»), o si es «hacer»/«ir» + lo mismo.
+ */
+export function isSimilarGoal(a: string, b: string): boolean {
+  const [ka, kb] = [keywords(a), keywords(b)]
+  if (!ka.length || !kb.length) return false
+  const head = (k: string[]) => (['hacer', 'ir', 'tener', 'empezar'].includes(k[0]) && k[1] ? `${k[0]} ${k[1]}` : k[0])
+  return head(ka) === head(kb)
+}
+
 export function describeTracking(t: GoalTracking): string {
   switch (t.kind) {
     case 'daily': return 'cada día'

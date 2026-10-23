@@ -5,7 +5,7 @@ import { Check, CheckCircle2, ChevronRight, CircleDashed, Heart, LifeBuoy, Messa
 import { AI_ERROR_MESSAGE, AIUnavailableError, closeEntry, reflectOnEntry, type ProgressOutcome } from '@/lib/ai/client'
 import { formatLong, weekStart } from '@/lib/dates'
 import { createGoal, deleteEntry, markGoalHandled, removeCheckin, saveAnswers, saveLearning, toggleFavorite } from '@/lib/db'
-import { describeTracking } from '@/lib/goals'
+import { describeTracking, isSimilarGoal } from '@/lib/goals'
 import { previewOf, stageOf, type EntryStage } from '@/lib/entries'
 import type { DetectedGoal, Entry } from '@/lib/types'
 import type { AppData } from '../data'
@@ -87,7 +87,7 @@ export function EntryView({ entry, data, navigate, notify }: { entry?: Entry; da
 
   const mood = moodOf(entry.mood)
   const r = entry.reflection
-  const pendingGoals = (r?.objetivos ?? []).filter((g) => !entry.handledGoals.includes(g.title) && !data.goals.some((x) => x.title.toLowerCase() === g.title.toLowerCase()))
+  const pendingGoals = (r?.objetivos ?? []).filter((g) => !entry.handledGoals.includes(g.title) && !data.goals.some((x) => x.status === 'active' && isSimilarGoal(x.title, g.title)))
   // Avances que Mentax ha apuntado a partir de esta entrada.
   const progress = data.goals.flatMap((g) => (g.checkins ?? []).filter((c) => c.entryId === entry.id).map((c) => ({ goal: g, checkin: c })))
   const learningSaved = !!entry.closing?.aprendizaje && data.learnings.some((l) => l.text === entry.closing!.aprendizaje)

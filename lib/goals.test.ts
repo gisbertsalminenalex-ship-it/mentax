@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { checkinStreak, goalStatus, guessTracking, withCheckin } from './goals'
+import { checkinStreak, goalStatus, guessTracking, isSimilarGoal, withCheckin } from './goals'
 import { migrateEntry } from './entries'
 import type { Goal, GoalCheckin } from './types'
 
@@ -16,6 +16,17 @@ describe('cómo se mide un objetivo', () => {
     assert.deepEqual(guessTracking('Leer 5 libros'), { kind: 'total', times: 5 })
     assert.deepEqual(guessTracking('Ir 20 veces a nadar'), { kind: 'total', times: 20 })
     assert.deepEqual(guessTracking('Ser más paciente'), { kind: 'manual' })
+  })
+})
+
+describe('objetivos parecidos', () => {
+  it('detecta la misma actividad aunque cambie la medida', () => {
+    assert.equal(isSimilarGoal('Meditar cada día', 'Meditar 10 minutos'), true)
+    assert.equal(isSimilarGoal('Leer 5 libros', 'leer más'), true)
+    assert.equal(isSimilarGoal('Hacer ejercicio cada día', 'Hacer ejercicio 3 veces por semana'), true)
+    assert.equal(isSimilarGoal('Ir al gimnasio 3 días', 'Ir a la cama antes de las 12'), false)
+    assert.equal(isSimilarGoal('Hacer ejercicio cada día', 'Hacer la cama'), false)
+    assert.equal(isSimilarGoal('Estudiar inglés', 'Meditar cada día'), false)
   })
 })
 
