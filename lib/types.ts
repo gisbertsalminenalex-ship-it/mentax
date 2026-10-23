@@ -13,7 +13,7 @@ export interface MentaxReflection {
   /** Preguntas para seguir reflexionando (normalmente dos). */
   preguntas: string[]
   /** Objetivos que el usuario ha mencionado en el texto, para proponer añadirlos. */
-  objetivos: string[]
+  objetivos: DetectedGoal[]
   /** Solo cuando lo escrito apunta a algo serio; si no, null. */
   ayudaProfesional: string | null
   createdAt: number
@@ -48,13 +48,37 @@ export interface Entry {
 
 export type GoalTone = 'violet' | 'mint' | 'pink' | 'peach'
 
+/** Cómo se mide un objetivo. «manual»: la barra la mueve el usuario. */
+export type GoalTracking =
+  | { kind: 'manual' }
+  | { kind: 'daily' }
+  | { kind: 'weekly'; times: number }
+  | { kind: 'total'; times: number }
+
+export interface DetectedGoal {
+  title: string
+  tracking: GoalTracking
+}
+
+/** Un día en que el usuario avanzó en el objetivo (lo detecta Mentax o lo marca él). */
+export interface GoalCheckin {
+  date: DayKey
+  /** Entrada del diario donde se detectó; vacío si lo marcó el usuario. */
+  entryId?: string
+  note: string
+  createdAt: number
+}
+
 export interface Goal {
   id: string
   title: string
   description: string
+  /** Progreso manual (solo cuenta si `tracking` es manual). */
   progress: number
   status: 'active' | 'completed'
   tone: GoalTone
+  tracking?: GoalTracking
+  checkins?: GoalCheckin[]
   /** Entrada del diario de la que salió, si la detectó Mentax. */
   entryId?: string
   createdAt: number

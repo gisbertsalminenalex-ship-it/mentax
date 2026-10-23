@@ -50,7 +50,7 @@ export default function Page() {
     entry: <EntryView key={id} entry={id ? data.entries.find((e) => e.id === id) : undefined} {...props} />,
     week: <Week {...props} />,
     goals: <Goals {...props} />,
-    goal: <GoalEditor key={id ?? 'new'} goal={id ? data.goals.find((g) => g.id === id) : undefined} navigate={navigate} notify={notify} />,
+    goal: <GoalEditor key={id ?? 'new'} goal={id ? data.goals.find((g) => g.id === id) : undefined} {...props} />,
     profile: <Profile {...props} />,
   }[screen]
 

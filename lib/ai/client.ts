@@ -3,10 +3,11 @@
  * /api/ai y guarda el resultado. Sin IA, el diario sigue funcionando.
  */
 import { addDays, parseDayKey, weekDays, weekStart } from '../dates'
-import { db, saveAnswersAndClosing, saveMentaxReflection } from '../db'
+import { applyEntryProgress, db, saveAnswersAndClosing, saveMentaxReflection } from '../db'
+import { describeTracking, goalStatus, trackingOf } from '../goals'
 import { localIdeasFor } from '../entries'
-import type { DayKey, Entry, MentaxClosing, MentaxReflection, WeekSummary } from '../types'
-import type { AIErrorCode, AIRequestBody, AIResponse, ContextEntry, MemoryContext } from './contract'
+import type { DayKey, Entry, WeekSummary } from '../types'
+import type { AIErrorCode, AIRequestBody, AIResponse, CloseResult, ContextEntry, GoalProgress, MemoryContext, ReflectResult } from './contract'
 
 export class AIUnavailableError extends Error {
   constructor(readonly code: AIErrorCode) {
@@ -52,13 +53,41 @@ function toContext(e: Entry, maxText: number, maxAnswer = 300): ContextEntry {
   return { date: e.date, mood: e.mood, text: clip(e.text.trim(), maxText), ...(qa.length ? { qa } : {}), ...(e.closing?.aprendizaje ? { aprendizaje: e.closing.aprendizaje } : {}) }
 }
 
-async function memory(today: DayKey): Promise<MemoryContext> {
+/** Objetivos y aprendizajes para la IA, y a qué objetivo corresponde cada `ref` («g1»…). */
+async function memoryWithRefs(today: DayKey): Promise<{ context: MemoryContext; refs: Map<string, string> }> {
   const thisWeek = parseDayKey(weekStart(today)).getTime()
   const [goals, learnings] = await Promise.all([db.goals.where('status').equals('active').toArray(), db.learnings.orderBy('createdAt').reverse().limit(10).toArray()])
+  const active = goals.slice(0, 15)
+  const refs = new Map(active.map((g, i) => [`g${i + 1}`, g.id]))
   return {
-    goals: goals.slice(0, 10).map((g) => ({ title: g.title, progress: g.progress, thisWeek: g.createdAt >= thisWeek })),
-    learnings: learnings.map((l) => l.text),
+    refs,
+    context: {
+      goals: active.map((g, i) => ({ ref: `g${i + 1}`, title: g.title, progress: goalStatus(g, today).percent, thisWeek: g.createdAt >= thisWeek, seguimiento: describeTracking(trackingOf(g)) })),
+      learnings: learnings.map((l) => l.text),
+    },
   }
+}
+
+async function memory(today: DayKey): Promise<MemoryContext> {
+  return (await memoryWithRefs(today)).context
+}
+
+/** Pasa los avances que ha visto la IA a los objetivos reales. Devuelve los objetivos completados. */
+async function applyProgress(entry: Entry, avances: GoalProgress[], refs: Map<string, string>, replace: boolean): Promise<ProgressOutcome> {
+  const items = avances.flatMap((a) => {
+    const goalId = refs.get(a.ref)
+    return goalId ? [{ goalId, note: a.nota }] : []
+  })
+  if (!items.length && !replace) return { advanced: 0, completed: [] }
+  const completed = await applyEntryProgress(entry.id, entry.date, items, replace)
+  return { advanced: items.length, completed }
+}
+
+export interface ProgressOutcome {
+  /** Cuántos objetivos han avanzado con esta entrada. */
+  advanced: number
+  /** Títulos de los objetivos que se han completado solos. */
+  completed: string[]
 }
 
 async function recentEntries(before: DayKey, count: number, maxText: number, excludeId?: string): Promise<ContextEntry[]> {
@@ -73,29 +102,33 @@ const weekdayOf = (date: DayKey) => parseDayKey(date).toLocaleDateString('es-ES'
 
 // ── Reflexión de Mentax sobre la entrada ────────────────
 
-export async function reflectOnEntry(id: string): Promise<MentaxReflection> {
+export async function reflectOnEntry(id: string): Promise<ProgressOutcome> {
   const entry = await db.reflections.get(id)
   if (!entry || !entry.text.trim()) throw new AIUnavailableError('bad-request')
-  const reflection = await callAI<MentaxReflection>({
+  const { context, refs } = await memoryWithRefs(entry.date)
+  const { avances, ...reflection } = await callAI<ReflectResult>({
     task: 'reflect',
-    input: { weekday: weekdayOf(entry.date), entry: toContext(entry, 6000), recent: await recentEntries(entry.date, 6, 500, id), ...(await memory(entry.date)) },
+    input: { weekday: weekdayOf(entry.date), entry: toContext(entry, 6000), recent: await recentEntries(entry.date, 6, 500, id), ...context },
   })
   await saveMentaxReflection(id, reflection)
-  return reflection
+  // Reflexión nueva: los avances de una lectura anterior se sustituyen.
+  return applyProgress(entry, avances, refs, true)
 }
 
 // ── Cierre tras las respuestas ──────────────────────────
 
-export async function closeEntry(id: string, answers: string[]): Promise<MentaxClosing> {
+export async function closeEntry(id: string, answers: string[]): Promise<ProgressOutcome> {
   const entry = await db.reflections.get(id)
   if (!entry?.reflection) throw new AIUnavailableError('bad-request')
   const qa = qaOf({ reflection: entry.reflection, answers }).map((x) => ({ pregunta: x.pregunta, respuesta: clip(x.respuesta, 2000) }))
-  const closing = await callAI<MentaxClosing>({
+  const { context, refs } = await memoryWithRefs(entry.date)
+  const { avances, ...closing } = await callAI<CloseResult>({
     task: 'close',
-    input: { entry: { date: entry.date, mood: entry.mood, text: clip(entry.text, 6000) }, reflexion: entry.reflection.reflexion, qa, ...(await memory(entry.date)) },
+    input: { entry: { date: entry.date, mood: entry.mood, text: clip(entry.text, 6000) }, reflexion: entry.reflection.reflexion, qa, ...context },
   })
   await saveAnswersAndClosing(id, answers, closing)
-  return closing
+  // Las respuestas pueden añadir avances a los ya vistos en el texto.
+  return applyProgress(entry, avances, refs, false)
 }
 
 // ── Ideas para escribir ─────────────────────────────────

@@ -1,12 +1,13 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Check, CheckCircle2, ChevronRight, CircleDashed, Heart, LifeBuoy, MessageCircleQuestion, Pencil, Plus, Send, Sparkles, Target, Trash2, X } from 'lucide-react'
-import { AI_ERROR_MESSAGE, AIUnavailableError, closeEntry, reflectOnEntry } from '@/lib/ai/client'
+import { Check, CheckCircle2, ChevronRight, CircleDashed, Heart, LifeBuoy, MessageCircleQuestion, Pencil, Plus, Send, Sparkles, Target, Trash2, TrendingUp, X } from 'lucide-react'
+import { AI_ERROR_MESSAGE, AIUnavailableError, closeEntry, reflectOnEntry, type ProgressOutcome } from '@/lib/ai/client'
 import { formatLong, weekStart } from '@/lib/dates'
-import { createGoal, deleteEntry, markGoalHandled, saveAnswers, saveLearning, toggleFavorite } from '@/lib/db'
+import { createGoal, deleteEntry, markGoalHandled, removeCheckin, saveAnswers, saveLearning, toggleFavorite } from '@/lib/db'
+import { describeTracking } from '@/lib/goals'
 import { previewOf, stageOf, type EntryStage } from '@/lib/entries'
-import type { Entry } from '@/lib/types'
+import type { DetectedGoal, Entry } from '@/lib/types'
 import type { AppData } from '../data'
 import type { Navigate, Notify } from '../nav'
 import { Button, Header, Loading, moodOf } from '../ui'
@@ -55,12 +56,17 @@ export function EntryView({ entry, data, navigate, notify }: { entry?: Entry; da
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, reflectionAt])
 
+  function announce({ advanced, completed }: ProgressOutcome) {
+    if (completed.length) notify(`¡Objetivo completado: ${completed[0]}!`)
+    else if (advanced) notify(advanced === 1 ? 'Mentax ha apuntado un avance en tus objetivos' : `Mentax ha apuntado avances en ${advanced} objetivos`)
+  }
+
   async function reflect() {
     if (!id) return
     setBusy('reflect')
     setError('')
     try {
-      await reflectOnEntry(id)
+      announce(await reflectOnEntry(id))
     } catch (e) {
       setError(e instanceof AIUnavailableError ? e.message : 'Mentax no ha podido leer tu entrada.')
     } finally {
@@ -81,7 +87,9 @@ export function EntryView({ entry, data, navigate, notify }: { entry?: Entry; da
 
   const mood = moodOf(entry.mood)
   const r = entry.reflection
-  const pendingGoals = (r?.objetivos ?? []).filter((g) => !entry.handledGoals.includes(g) && !data.goals.some((x) => x.title.toLowerCase() === g.toLowerCase()))
+  const pendingGoals = (r?.objetivos ?? []).filter((g) => !entry.handledGoals.includes(g.title) && !data.goals.some((x) => x.title.toLowerCase() === g.title.toLowerCase()))
+  // Avances que Mentax ha apuntado a partir de esta entrada.
+  const progress = data.goals.flatMap((g) => (g.checkins ?? []).filter((c) => c.entryId === entry.id).map((c) => ({ goal: g, checkin: c })))
   const learningSaved = !!entry.closing?.aprendizaje && data.learnings.some((l) => l.text === entry.closing!.aprendizaje)
 
   async function sendAnswers() {
@@ -90,7 +98,7 @@ export function EntryView({ entry, data, navigate, notify }: { entry?: Entry; da
     setError('')
     await saveAnswers(id, answers)
     try {
-      await closeEntry(id, answers)
+      announce(await closeEntry(id, answers))
     } catch (e) {
       setError(e instanceof AIUnavailableError ? e.message : 'Mentax no ha podido leer tus respuestas.')
     } finally {
@@ -98,9 +106,9 @@ export function EntryView({ entry, data, navigate, notify }: { entry?: Entry; da
     }
   }
 
-  async function addGoal(goal: string) {
-    await createGoal(goal, '', 0, entry!.id)
-    await markGoalHandled(entry!.id, goal)
+  async function addGoal(goal: DetectedGoal) {
+    await createGoal(goal.title, '', 0, { entryId: entry!.id, tracking: goal.tracking })
+    await markGoalHandled(entry!.id, goal.title)
     notify('Añadido a tus objetivos')
   }
 
@@ -122,8 +130,9 @@ export function EntryView({ entry, data, navigate, notify }: { entry?: Entry; da
     {r && busy !== 'reflect' && <>
       <div className="analysis-card reply"><b><Sparkles size={13} /> Mentax reflexiona</b><p>{r.reflexion}</p></div>
       {r.ayudaProfesional && <div className="help-card"><LifeBuoy size={18} /><p>{r.ayudaProfesional}</p></div>}
-      {pendingGoals.length > 0 && <div className="goal-suggest"><b><Target size={13} /> Has mencionado estos objetivos</b><p>¿Quieres añadirlos a tus objetivos para seguirlos?</p>{pendingGoals.map((g) => <div className="goal-suggest-row" key={g}><span>{g}</span><button className="add" onClick={() => addGoal(g)}><Plus size={13} /> Añadir</button><button className="icon-button small" onClick={() => markGoalHandled(entry.id, g)} aria-label="Descartar"><X size={14} /></button></div>)}</div>}
+      {pendingGoals.length > 0 && <div className="goal-suggest"><b><Target size={13} /> Has mencionado estos objetivos</b><p>¿Quieres añadirlos? Mentax irá apuntando tus avances cuando los cuentes en el diario.</p>{pendingGoals.map((g) => <div className="goal-suggest-row" key={g.title}><span>{g.title}<small>Se medirá: {describeTracking(g.tracking)}</small></span><button className="add" onClick={() => addGoal(g)}><Plus size={13} /> Añadir</button><button className="icon-button small" onClick={() => markGoalHandled(entry.id, g.title)} aria-label="Descartar"><X size={14} /></button></div>)}</div>}
     </>}
+    {progress.length > 0 && busy === null && <div className="progress-found"><b><TrendingUp size={13} /> Avances en tus objetivos</b>{progress.map(({ goal, checkin }) => <div className="progress-row" key={goal.id}><Check size={14} /><span><em>{goal.title}</em>{checkin.note && <small>{checkin.note}</small>}</span><button className="undo" onClick={async () => { await removeCheckin(goal.id, checkin.date, checkin.entryId); notify('Avance quitado') }}>Deshacer</button></div>)}</div>}
 
     {r && stage === 'questions' && r.preguntas.length > 0 && busy !== 'reflect' && <>
       <h2 className="section-title qa-title">Para seguir reflexionando</h2>

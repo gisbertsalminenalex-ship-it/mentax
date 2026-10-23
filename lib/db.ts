@@ -4,7 +4,8 @@
  */
 import Dexie, { type Table } from 'dexie'
 import { deriveTitle, migrateEntry } from './entries'
-import type { DailyIdeas, DayKey, Entry, Goal, GoalTone, Learning, MentaxClosing, MentaxReflection, Mood, Profile, WeekSummary } from './types'
+import { MANUAL, normalizeTracking, trackingOf, withCheckin } from './goals'
+import type { DailyIdeas, DayKey, Entry, Goal, GoalTone, GoalTracking, Learning, MentaxClosing, MentaxReflection, Mood, Profile, WeekSummary } from './types'
 
 interface SettingEntry {
   key: string
@@ -36,6 +37,10 @@ class MentaxDB extends Dexie {
       .upgrade((tx) => tx.table('reflections').toCollection().modify((r, ref) => {
         ref.value = migrateEntry(r)
       }))
+    // v3: los objetivos detectados llevan cómo se miden (antes eran solo texto).
+    this.version(3).upgrade((tx) => tx.table('reflections').toCollection().modify((r, ref) => {
+      ref.value = migrateEntry(r)
+    }))
   }
 }
 
@@ -97,7 +102,11 @@ export async function saveEntry(draft: EntryDraft, id?: string): Promise<string>
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   }
-  await db.reflections.put(entry)
+  await db.transaction('rw', db.reflections, db.goals, async () => {
+    await db.reflections.put(entry)
+    // Los avances detectados en el texto anterior ya no valen.
+    if (existing && !keepConversation) await removeEntryCheckins(existing.id)
+  })
   return entry.id
 }
 
@@ -126,9 +135,10 @@ export async function markGoalHandled(id: string, goal: string): Promise<void> {
 }
 
 export async function deleteEntry(id: string): Promise<void> {
-  await db.transaction('rw', db.reflections, db.learnings, async () => {
+  await db.transaction('rw', db.reflections, db.learnings, db.goals, async () => {
     await db.reflections.delete(id)
     await db.learnings.where('reflectionId').equals(id).delete()
+    await removeEntryCheckins(id)
   })
 }
 
@@ -136,19 +146,32 @@ export async function deleteEntry(id: string): Promise<void> {
 
 const TONES: GoalTone[] = ['violet', 'mint', 'pink', 'peach']
 
-export async function createGoal(title: string, description: string, progress: number, entryId?: string): Promise<string> {
+export async function createGoal(title: string, description: string, progress: number, options: { entryId?: string; tracking?: GoalTracking } = {}): Promise<string> {
   const now = Date.now()
   const count = await db.goals.count()
   const id = newId()
-  await db.goals.put({ id, title: title.trim(), description: description.trim(), progress: clampProgress(progress), status: 'active', tone: TONES[count % TONES.length], entryId, createdAt: now, updatedAt: now })
+  await db.goals.put({
+    id,
+    title: title.trim(),
+    description: description.trim(),
+    progress: clampProgress(progress),
+    status: 'active',
+    tone: TONES[count % TONES.length],
+    tracking: normalizeTracking(options.tracking ?? MANUAL),
+    checkins: [],
+    entryId: options.entryId,
+    createdAt: now,
+    updatedAt: now,
+  })
   return id
 }
 
-export async function updateGoal(id: string, changes: Partial<Pick<Goal, 'title' | 'description' | 'progress' | 'status'>>): Promise<void> {
+export async function updateGoal(id: string, changes: Partial<Pick<Goal, 'title' | 'description' | 'progress' | 'status' | 'tracking'>>): Promise<void> {
   const patch: Partial<Goal> = { ...changes, updatedAt: Date.now() }
   if (changes.title !== undefined) patch.title = changes.title.trim()
   if (changes.description !== undefined) patch.description = changes.description.trim()
   if (changes.progress !== undefined) patch.progress = clampProgress(changes.progress)
+  if (changes.tracking !== undefined) patch.tracking = normalizeTracking(changes.tracking)
   if (changes.status === 'completed') {
     patch.completedAt = Date.now()
     patch.progress = 100
@@ -159,6 +182,52 @@ export async function updateGoal(id: string, changes: Partial<Pick<Goal, 'title'
 
 export function deleteGoal(id: string): Promise<void> {
   return db.goals.delete(id)
+}
+
+// ── Avances en objetivos ────────────────────────────────
+
+/** Quita de todos los objetivos los avances detectados en una entrada. */
+async function removeEntryCheckins(entryId: string): Promise<void> {
+  await db.goals.toCollection().modify((g) => {
+    if (g.checkins?.some((c) => c.entryId === entryId)) g.checkins = g.checkins.filter((c) => c.entryId !== entryId)
+  })
+}
+
+/**
+ * Apunta los avances que Mentax ha detectado en una entrada. Con `replace`
+ * (una reflexión nueva) se quitan antes los que la entrada tuviera. Los
+ * objetivos «en total» que llegan a la meta se completan solos.
+ * Devuelve los títulos de los objetivos completados.
+ */
+export async function applyEntryProgress(entryId: string, date: DayKey, items: { goalId: string; note: string }[], replace: boolean): Promise<string[]> {
+  const completed: string[] = []
+  await db.transaction('rw', db.goals, async () => {
+    if (replace) await removeEntryCheckins(entryId)
+    const now = Date.now()
+    for (const { goalId, note } of items) {
+      const goal = await db.goals.get(goalId)
+      if (!goal || goal.status !== 'active') continue
+      const checkins = withCheckin(goal.checkins, { date, entryId, note, createdAt: now })
+      const tracking = trackingOf(goal)
+      const reached = tracking.kind === 'total' && checkins.length >= tracking.times
+      await db.goals.update(goalId, { checkins, updatedAt: now, ...(reached ? { status: 'completed' as const, progress: 100, completedAt: now } : {}) })
+      if (reached) completed.push(goal.title)
+    }
+  })
+  return completed
+}
+
+/** Avance marcado a mano por el usuario (sin entrada del diario). */
+export async function addManualCheckin(goalId: string, date: DayKey, note: string): Promise<void> {
+  const goal = await db.goals.get(goalId)
+  if (!goal) return
+  await db.goals.update(goalId, { checkins: withCheckin(goal.checkins, { date, note: note.trim() || 'Marcado a mano', createdAt: Date.now() }), updatedAt: Date.now() })
+}
+
+export async function removeCheckin(goalId: string, date: DayKey, entryId?: string): Promise<void> {
+  const goal = await db.goals.get(goalId)
+  if (!goal) return
+  await db.goals.update(goalId, { checkins: (goal.checkins ?? []).filter((c) => !(c.date === date && c.entryId === entryId)), updatedAt: Date.now() })
 }
 
 function clampProgress(n: number): number {

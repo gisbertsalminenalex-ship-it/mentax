@@ -29,7 +29,7 @@ function formatEntry(e: ContextEntry): string {
 }
 
 function formatMemory(m: MemoryContext): string {
-  const goals = m.goals.length ? m.goals.map((g) => `- ${g.title} (${g.progress}%${g.thisWeek ? ', propuesto esta semana' : ''})`).join('\n') : '- (ninguno)'
+  const goals = m.goals.length ? m.goals.map((g) => `- [${g.ref}] ${g.title} (se mide: ${g.seguimiento}; lleva ${g.progress}%${g.thisWeek ? '; propuesto esta semana' : ''})`).join('\n') : '- (ninguno)'
   const learnings = m.learnings.length ? m.learnings.map((l) => `- ${l}`).join('\n') : '- (ninguno)'
   return `Objetivos activos:\n${goals}\n\nAprendizajes que ha guardado:\n${learnings}`
 }
@@ -37,6 +37,13 @@ function formatMemory(m: MemoryContext): string {
 const recentBlock = (list: ContextEntry[]) => (list.length ? list.map(formatEntry).join('\n\n') : '(ninguna)')
 
 const stringArray = { type: 'array', items: { type: 'string' } }
+
+const PROGRESS_RULES = `- "avances": los objetivos activos en los que la persona dice que HOY ha hecho algo concreto (por ejemplo, para "Hacer ejercicio cada día", si cuenta que ha salido a correr). Usa el identificador entre corchetes ("g1"…) en "ref" y en "nota" resume en pocas palabras lo que hizo ("Ha salido a correr 30 minutos"). Solo cuenta lo que ha hecho de verdad hoy; no lo que piensa hacer, lo que no ha hecho, ni días pasados. Si no hay ninguno, lista vacía.`
+
+const progressSchema = {
+  type: 'array',
+  items: { type: 'object', additionalProperties: false, required: ['ref', 'nota'], properties: { ref: { type: 'string' }, nota: { type: 'string' } } },
+}
 
 export function reflectPrompt(input: ReflectInput): PromptSpec {
   return {
@@ -46,7 +53,12 @@ Tu tarea: la persona acaba de escribir la entrada de hoy en su diario. Devuelve:
 - "title": un título corto (máximo 7 palabras) que resuma el día, sin punto final.
 - "reflexion": tu reflexión sobre lo que ha escrito (4-6 frases). Refleja lo importante, valida lo que siente, señala algún patrón o contraste que veas (también respecto a días anteriores si los hay) y ofrece otra perspectiva sin dar lecciones.
 - "preguntas": exactamente 2 preguntas abiertas y concretas, basadas en lo que ha escrito, para que profundice. Cortas (máximo 22 palabras cada una). Nada genérico.
-- "objetivos": los objetivos o propósitos que la persona dice explícitamente que quiere conseguir (por ejemplo "esta semana quiero ir 3 días al gimnasio"). Redáctalos como un objetivo breve en infinitivo ("Ir 3 días al gimnasio"). No incluyas los que ya están en sus objetivos activos. Si no menciona ninguno, lista vacía. No te los inventes.
+- "objetivos": los objetivos o propósitos NUEVOS que la persona dice explícitamente que quiere conseguir (por ejemplo "esta semana quiero ir 3 días al gimnasio"). Para cada uno:
+  - "titulo": un objetivo breve en infinitivo ("Ir al gimnasio 3 días por semana").
+  - "frecuencia": "diaria" si es algo de cada día ("hacer ejercicio cada día"); "semanal" si son X veces por semana; "total" si es una cantidad a alcanzar ("leer 5 libros"); "ninguna" si no se puede contar ("ser más paciente").
+  - "veces": cuántas veces (por semana o en total); 1 si es diaria o ninguna.
+  No incluyas los que ya están en sus objetivos activos. Si no menciona ninguno, lista vacía. No te los inventes.
+${PROGRESS_RULES}
 - "ayudaProfesional": ver abajo.
 Si hoy es sábado o domingo y tiene objetivos propuestos esta semana, una de las dos preguntas puede ser sobre cómo le han ido.
 ${SERIOUS}
@@ -65,10 +77,25 @@ ${formatMemory(input)}
     schema: {
       type: 'object',
       additionalProperties: false,
-      required: ['title', 'reflexion', 'preguntas', 'objetivos', 'ayudaProfesional'],
-      properties: { title: { type: 'string' }, reflexion: { type: 'string' }, preguntas: stringArray, objetivos: stringArray, ayudaProfesional: { type: 'string' } },
+      required: ['title', 'reflexion', 'preguntas', 'objetivos', 'avances', 'ayudaProfesional'],
+      properties: {
+        title: { type: 'string' },
+        reflexion: { type: 'string' },
+        preguntas: stringArray,
+        objetivos: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['titulo', 'frecuencia', 'veces'],
+            properties: { titulo: { type: 'string' }, frecuencia: { type: 'string', enum: ['diaria', 'semanal', 'total', 'ninguna'] }, veces: { type: 'integer' } },
+          },
+        },
+        avances: progressSchema,
+        ayudaProfesional: { type: 'string' },
+      },
     },
-    maxOutputTokens: 1400,
+    maxOutputTokens: 1600,
   }
 }
 
@@ -79,6 +106,7 @@ export function closePrompt(input: CloseInput): PromptSpec {
 Tu tarea: la persona ha escrito en su diario, tú le has dado una reflexión y le has hecho unas preguntas. Ahora ha respondido. Cierra el día:
 - "comentario": un comentario final sobre sus respuestas (3-5 frases). Reconoce lo que ha descubierto, conecta las respuestas con lo que escribió y deja una idea o una sugerencia pequeña y concreta para mañana. Que suene a cierre, sin nuevas preguntas.
 - "aprendizaje": el aprendizaje principal del día en una frase, en primera persona como si lo escribiera ella ("Cuando descanso bien, …").
+${PROGRESS_RULES} Fíjate sobre todo en lo que cuenta en sus respuestas.
 - "ayudaProfesional": ver abajo.
 ${SERIOUS}
 Responde solo con JSON.`,
@@ -97,8 +125,8 @@ ${formatMemory(input)}
     schema: {
       type: 'object',
       additionalProperties: false,
-      required: ['comentario', 'aprendizaje', 'ayudaProfesional'],
-      properties: { comentario: { type: 'string' }, aprendizaje: { type: 'string' }, ayudaProfesional: { type: 'string' } },
+      required: ['comentario', 'aprendizaje', 'avances', 'ayudaProfesional'],
+      properties: { comentario: { type: 'string' }, aprendizaje: { type: 'string' }, avances: progressSchema, ayudaProfesional: { type: 'string' } },
     },
     maxOutputTokens: 900,
   }

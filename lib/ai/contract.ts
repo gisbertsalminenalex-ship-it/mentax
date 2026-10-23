@@ -2,7 +2,8 @@
  * Contrato entre la app y la ruta /api/ai. Lo comparten cliente y servidor:
  * qué se envía en cada tarea y cómo se limpia lo que devuelve el modelo.
  */
-import type { DayKey, MentaxClosing, MentaxReflection, Mood, WeekSummary } from '../types'
+import { normalizeTracking } from '../goals'
+import type { DayKey, DetectedGoal, GoalTracking, MentaxClosing, MentaxReflection, Mood, WeekSummary } from '../types'
 
 /** Una entrada del diario tal como la ve la IA (recortada). */
 export interface ContextEntry {
@@ -15,7 +16,8 @@ export interface ContextEntry {
 }
 
 export interface MemoryContext {
-  goals: { title: string; progress: number; thisWeek: boolean }[]
+  /** `ref` identifica el objetivo en esta petición («g1»…), para que la IA señale avances. */
+  goals: { ref: string; title: string; progress: number; thisWeek: boolean; seguimiento: string }[]
   learnings: string[]
 }
 
@@ -68,7 +70,8 @@ const isEntry = (v: unknown): v is ContextEntry =>
 
 const isMemory = (v: Record<string, unknown>) =>
   Array.isArray(v.goals) &&
-  v.goals.every((g) => isObject(g) && typeof g.title === 'string' && typeof g.progress === 'number') &&
+  v.goals.length <= 20 &&
+  v.goals.every((g) => isObject(g) && typeof g.ref === 'string' && typeof g.title === 'string' && typeof g.progress === 'number' && typeof g.seguimiento === 'string') &&
   Array.isArray(v.learnings) &&
   v.learnings.every((l) => typeof l === 'string')
 
@@ -99,7 +102,47 @@ const str = (v: unknown, max = 600): string => (typeof v === 'string' ? v.trim()
 const strList = (v: unknown, maxItems: number, maxLen = 220): string[] =>
   Array.isArray(v) ? [...new Set(v.map((x) => str(x, maxLen)).filter(Boolean))].slice(0, maxItems) : []
 
-export function cleanReflection(raw: unknown, now: number = Date.now()): MentaxReflection | null {
+/** Un avance en un objetivo que la IA ha visto en lo escrito hoy. */
+export interface GoalProgress {
+  ref: string
+  nota: string
+}
+
+export type ReflectResult = MentaxReflection & { avances: GoalProgress[] }
+export type CloseResult = MentaxClosing & { avances: GoalProgress[] }
+
+const FREQUENCY: Record<string, (times: number) => GoalTracking> = {
+  diaria: () => ({ kind: 'daily' }),
+  semanal: (times) => ({ kind: 'weekly', times }),
+  total: (times) => ({ kind: 'total', times }),
+}
+
+function cleanDetectedGoals(v: unknown): DetectedGoal[] {
+  if (!Array.isArray(v)) return []
+  const out: DetectedGoal[] = []
+  for (const g of v) {
+    if (!isObject(g)) continue
+    const title = str(g.titulo, 90)
+    if (!title || out.some((x) => x.title.toLowerCase() === title.toLowerCase())) continue
+    const make = FREQUENCY[String(g.frecuencia)]
+    out.push({ title, tracking: make ? normalizeTracking(make(Number(g.veces))) : { kind: 'manual' } })
+  }
+  return out.slice(0, 5)
+}
+
+function cleanProgress(v: unknown): GoalProgress[] {
+  if (!Array.isArray(v)) return []
+  const seen = new Set<string>()
+  return v.flatMap((p) => {
+    if (!isObject(p)) return []
+    const ref = str(p.ref, 10)
+    if (!/^g\d{1,2}$/.test(ref) || seen.has(ref)) return []
+    seen.add(ref)
+    return [{ ref, nota: str(p.nota, 160) }]
+  })
+}
+
+export function cleanReflection(raw: unknown, now: number = Date.now()): ReflectResult | null {
   if (!isObject(raw)) return null
   const reflexion = str(raw.reflexion, 2000)
   const preguntas = strList(raw.preguntas, 3, 240)
@@ -108,17 +151,18 @@ export function cleanReflection(raw: unknown, now: number = Date.now()): MentaxR
     title: str(raw.title, 70).replace(/[.]+$/, ''),
     reflexion,
     preguntas,
-    objetivos: strList(raw.objetivos, 5, 90),
+    objetivos: cleanDetectedGoals(raw.objetivos),
     ayudaProfesional: str(raw.ayudaProfesional, 600) || null,
     createdAt: now,
+    avances: cleanProgress(raw.avances),
   }
 }
 
-export function cleanClosing(raw: unknown, now: number = Date.now()): MentaxClosing | null {
+export function cleanClosing(raw: unknown, now: number = Date.now()): CloseResult | null {
   if (!isObject(raw)) return null
   const comentario = str(raw.comentario, 1500)
   if (!comentario) return null
-  return { comentario, aprendizaje: str(raw.aprendizaje, 300), ayudaProfesional: str(raw.ayudaProfesional, 600) || null, createdAt: now }
+  return { comentario, aprendizaje: str(raw.aprendizaje, 300), ayudaProfesional: str(raw.ayudaProfesional, 600) || null, createdAt: now, avances: cleanProgress(raw.avances) }
 }
 
 export function cleanIdeas(raw: unknown): string[] | null {

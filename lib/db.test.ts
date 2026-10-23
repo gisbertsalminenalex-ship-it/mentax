@@ -3,10 +3,10 @@ import { beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import Dexie from 'dexie'
 import { buildBackup, parseBackup, restoreBackup } from './backup'
-import { clearAll, createGoal, db, deleteEntry, entryForDay, markGoalHandled, saveAnswersAndClosing, saveEntry, saveLearning, saveMentaxReflection, updateGoal } from './db'
+import { addManualCheckin, applyEntryProgress, clearAll, createGoal, db, deleteEntry, entryForDay, markGoalHandled, removeCheckin, saveAnswersAndClosing, saveEntry, saveLearning, saveMentaxReflection, updateGoal } from './db'
 
 const text = 'He paseado por el parque. Esta semana quiero dormir mejor.'
-const reflection = { title: 'Un paseo tranquilo', reflexion: 'r', preguntas: ['¿A?', '¿B?'], objetivos: ['Dormir mejor'], ayudaProfesional: null, createdAt: 1 }
+const reflection = { title: 'Un paseo tranquilo', reflexion: 'r', preguntas: ['¿A?', '¿B?'], objetivos: [{ title: 'Dormir mejor', tracking: { kind: 'manual' as const } }], ayudaProfesional: null, createdAt: 1 }
 const closing = { comentario: 'c', aprendizaje: 'Pasear me calma', ayudaProfesional: null, createdAt: 2 }
 
 describe('base local', () => {
@@ -61,7 +61,7 @@ describe('base local', () => {
   })
 
   it('objetivos: límites de progreso y completar', async () => {
-    const id = await createGoal('  Dormir mejor ', '', 140, 'entrada-1')
+    const id = await createGoal('  Dormir mejor ', '', 140, { entryId: 'entrada-1' })
     const created = (await db.goals.get(id))!
     assert.equal(created.progress, 100)
     assert.equal(created.entryId, 'entrada-1')
@@ -71,6 +71,53 @@ describe('base local', () => {
     assert.equal(g.title, 'Dormir mejor')
     assert.equal(g.progress, 100)
     assert.ok(g.completedAt)
+  })
+
+  it('los avances del diario se apuntan, se sustituyen y se deshacen', async () => {
+    const goalId = await createGoal('Hacer ejercicio cada día', '', 0, { tracking: { kind: 'daily' } })
+    const entryId = await saveEntry({ date: '2024-05-20', text: 'He salido a correr', durationSec: 0 })
+    await applyEntryProgress(entryId, '2024-05-20', [{ goalId, note: 'Ha corrido' }], true)
+    await applyEntryProgress(entryId, '2024-05-20', [{ goalId, note: 'Ha corrido 5 km' }], false)
+    let g = (await db.goals.get(goalId))!
+    assert.equal(g.checkins!.length, 1)
+    assert.equal(g.checkins![0].note, 'Ha corrido 5 km')
+    // Una reflexión nueva sin avances quita los anteriores de esa entrada.
+    await applyEntryProgress(entryId, '2024-05-20', [], true)
+    assert.equal((await db.goals.get(goalId))!.checkins!.length, 0)
+    await applyEntryProgress(entryId, '2024-05-20', [{ goalId, note: 'Ha corrido' }], true)
+    await addManualCheckin(goalId, '2024-05-21', '')
+    await removeCheckin(goalId, '2024-05-20', entryId)
+    g = (await db.goals.get(goalId))!
+    assert.deepEqual(g.checkins!.map((c) => [c.date, c.entryId]), [['2024-05-21', undefined]])
+  })
+
+  it('reescribir o borrar la entrada quita sus avances', async () => {
+    const goalId = await createGoal('Leer', '', 0, { tracking: { kind: 'total', times: 10 } })
+    const a = await saveEntry({ date: '2024-05-20', text: 'He leído', durationSec: 0 })
+    const b = await saveEntry({ date: '2024-05-21', text: 'He leído otra vez', durationSec: 0 })
+    await applyEntryProgress(a, '2024-05-20', [{ goalId, note: '' }], true)
+    await applyEntryProgress(b, '2024-05-21', [{ goalId, note: '' }], true)
+    await saveEntry({ date: '2024-05-20', text: 'He leído', mood: 4, durationSec: 0 }, a) // mismo texto: se conserva
+    assert.equal((await db.goals.get(goalId))!.checkins!.length, 2)
+    await saveEntry({ date: '2024-05-20', text: 'Hoy no he leído', durationSec: 0 }, a)
+    assert.equal((await db.goals.get(goalId))!.checkins!.length, 1)
+    await deleteEntry(b)
+    assert.equal((await db.goals.get(goalId))!.checkins!.length, 0)
+  })
+
+  it('un objetivo «en total» se completa solo al llegar a la meta', async () => {
+    const goalId = await createGoal('Leer 2 libros', '', 0, { tracking: { kind: 'total', times: 2 } })
+    const a = await saveEntry({ date: '2024-05-20', text: 'Acabé un libro', durationSec: 0 })
+    const b = await saveEntry({ date: '2024-05-27', text: 'Acabé otro libro', durationSec: 0 })
+    assert.deepEqual(await applyEntryProgress(a, '2024-05-20', [{ goalId, note: '' }], true), [])
+    assert.deepEqual(await applyEntryProgress(b, '2024-05-27', [{ goalId, note: '' }], true), ['Leer 2 libros'])
+    const g = (await db.goals.get(goalId))!
+    assert.equal(g.status, 'completed')
+    assert.ok(g.completedAt)
+    // Ya completado: no suma más.
+    const c = await saveEntry({ date: '2024-05-28', text: 'Y otro', durationSec: 0 })
+    await applyEntryProgress(c, '2024-05-28', [{ goalId, note: '' }], true)
+    assert.equal((await db.goals.get(goalId))!.checkins!.length, 2)
   })
 
   it('exportar y restaurar devuelve los mismos datos', async () => {

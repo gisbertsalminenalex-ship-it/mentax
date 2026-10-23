@@ -3,7 +3,8 @@
  * para escribir y conversión de las reflexiones guiadas de la primera versión.
  */
 import { parseDayKey } from './dates'
-import type { DayKey, Entry, Mood } from './types'
+import { guessTracking } from './goals'
+import type { DayKey, DetectedGoal, Entry, Mood } from './types'
 
 /** En qué punto está la conversación con Mentax en una entrada. */
 export type EntryStage = 'written' | 'questions' | 'closed'
@@ -64,10 +65,17 @@ interface LegacyReflection {
   updatedAt?: number
 }
 
+/** Hasta la v3 los objetivos detectados eran solo texto. */
+function toDetectedGoal(g: DetectedGoal | string): DetectedGoal {
+  return typeof g === 'string' ? { title: g, tracking: guessTracking(g) } : g
+}
+
 /** Convierte una reflexión guiada antigua en entrada del diario; las nuevas pasan tal cual. */
 export function migrateEntry(raw: Entry | LegacyReflection): Entry {
   if ('text' in raw && typeof raw.text === 'string') {
-    return { ...raw, answers: raw.answers ?? [], handledGoals: raw.handledGoals ?? [] }
+    const entry: Entry = { ...raw, answers: raw.answers ?? [], handledGoals: raw.handledGoals ?? [] }
+    if (raw.reflection) entry.reflection = { ...raw.reflection, objetivos: (raw.reflection.objetivos ?? []).map(toDetectedGoal) }
+    return entry
   }
   const old = raw as LegacyReflection
   const text = old.answers

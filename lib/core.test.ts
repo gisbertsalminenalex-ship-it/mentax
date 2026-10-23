@@ -80,7 +80,7 @@ describe('entradas del diario', () => {
 })
 
 describe('contrato IA', () => {
-  const memory = { goals: [{ title: 'Dormir mejor', progress: 30, thisWeek: true }], learnings: ['Me siento mejor cuando paseo'] }
+  const memory = { goals: [{ ref: 'g1', title: 'Dormir mejor', progress: 30, thisWeek: true, seguimiento: 'cada día' }], learnings: ['Me siento mejor cuando paseo'] }
   const entry = { date: '2024-05-20', mood: 4 as const, text: 'Hoy he paseado. Esta semana quiero ir 3 días al gimnasio.' }
   const qa = [{ pregunta: '¿Qué te dio el paseo?', respuesta: 'Calma' }]
 
@@ -97,17 +97,32 @@ describe('contrato IA', () => {
   })
 
   it('cleanReflection exige reflexión y preguntas, y deja la ayuda vacía en null', () => {
-    const r = cleanReflection({ title: 'Paseo y planes.', reflexion: 'Te leo.', preguntas: ['¿A?', '¿B?', '¿C?', '¿D?'], objetivos: ['Ir 3 días al gimnasio', 'Ir 3 días al gimnasio'], ayudaProfesional: '' }, 1)!
+    const r = cleanReflection({
+      title: 'Paseo y planes.', reflexion: 'Te leo.', preguntas: ['¿A?', '¿B?', '¿C?', '¿D?'], ayudaProfesional: '',
+      objetivos: [
+        { titulo: 'Ir al gimnasio 3 días por semana', frecuencia: 'semanal', veces: 3 },
+        { titulo: 'ir al gimnasio 3 días por semana', frecuencia: 'semanal', veces: 3 },
+        { titulo: 'Hacer ejercicio cada día', frecuencia: 'diaria', veces: 1 },
+        { titulo: 'Leer 5 libros', frecuencia: 'total', veces: 5 },
+        { titulo: 'Ser más paciente', frecuencia: 'ninguna', veces: 1 },
+        { titulo: 'Correr', frecuencia: 'semanal', veces: 40 },
+      ],
+      avances: [{ ref: 'g1', nota: 'Ha corrido' }, { ref: 'g1', nota: 'repetido' }, { ref: 'x; drop', nota: 'mal' }],
+    }, 1)!
     assert.equal(r.title, 'Paseo y planes')
     assert.equal(r.preguntas.length, 3)
-    assert.deepEqual(r.objetivos, ['Ir 3 días al gimnasio'])
+    assert.deepEqual(r.objetivos.map((g) => g.tracking), [{ kind: 'weekly', times: 3 }, { kind: 'daily' }, { kind: 'total', times: 5 }, { kind: 'manual' }, { kind: 'weekly', times: 7 }])
+    assert.deepEqual(r.avances, [{ ref: 'g1', nota: 'Ha corrido' }])
     assert.equal(r.ayudaProfesional, null)
     assert.equal(cleanReflection({ reflexion: 'x', preguntas: [] }), null)
     assert.equal(cleanReflection({ preguntas: ['¿A?'] }), null)
   })
 
   it('cleanClosing y cleanIdeas', () => {
-    assert.equal(cleanClosing({ comentario: 'Bien.', aprendizaje: 'a', ayudaProfesional: 'Habla con alguien.' })!.ayudaProfesional, 'Habla con alguien.')
+    const c = cleanClosing({ comentario: 'Bien.', aprendizaje: 'a', ayudaProfesional: 'Habla con alguien.', avances: [{ ref: 'g2', nota: 'Ha leído' }] })!
+    assert.equal(c.ayudaProfesional, 'Habla con alguien.')
+    assert.deepEqual(c.avances, [{ ref: 'g2', nota: 'Ha leído' }])
+    assert.deepEqual(cleanClosing({ comentario: 'Bien.' })!.avances, [])
     assert.equal(cleanClosing({ aprendizaje: 'a' }), null)
     assert.deepEqual(cleanIdeas({ ideas: ['a', 'b', 'c', 'd'] }), ['a', 'b', 'c'])
     assert.equal(cleanIdeas({ ideas: [] }), null)
