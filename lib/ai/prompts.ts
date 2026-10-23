@@ -57,7 +57,7 @@ Tu tarea: la persona acaba de escribir la entrada de hoy en su diario. Devuelve:
   - "titulo": un objetivo breve en infinitivo ("Ir al gimnasio 3 días por semana").
   - "frecuencia": "diaria" si es algo de cada día ("hacer ejercicio cada día"); "semanal" si son X veces por semana; "total" si es una cantidad a alcanzar ("leer 5 libros"); "ninguna" si no se puede contar ("ser más paciente").
   - "veces": cuántas veces (por semana o en total); 1 si es diaria o ninguna.
-  No incluyas los que ya están en sus objetivos activos. Si no menciona ninguno, lista vacía. No te los inventes.
+  No incluyas los que ya están en sus objetivos activos ni otros parecidos sobre la misma actividad (si ya tiene "Meditar cada día", no propongas "Meditar 10 minutos"). Si no menciona ninguno, lista vacía. No te los inventes.
 ${PROGRESS_RULES}
 - "ayudaProfesional": ver abajo.
 Si hoy es sábado o domingo y tiene objetivos propuestos esta semana, una de las dos preguntas puede ser sobre cómo le han ido.
