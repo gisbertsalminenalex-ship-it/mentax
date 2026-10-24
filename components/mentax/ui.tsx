@@ -5,7 +5,7 @@ import type { Mood } from '@/lib/types'
 import type { Navigate, Screen } from './nav'
 
 export function Logo() {
-  return <div className="brand-mark"><img src="/mentax-logo.png" alt="Logo de Mentax" /></div>
+  return <div className="brand-mark"><img src="/mentax-cerebro.png" alt="Logo de Mentax" /></div>
 }
 
 export function Button({ children, onClick, variant = 'primary', className = '', disabled, type = 'button' }: { children: React.ReactNode; onClick?: () => void; variant?: 'primary' | 'ghost' | 'soft'; className?: string; disabled?: boolean; type?: 'button' | 'submit' }) {
