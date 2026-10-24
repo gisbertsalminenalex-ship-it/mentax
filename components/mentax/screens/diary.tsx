@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Check, CheckCircle2, ChevronRight, CircleDashed, Heart, LifeBuoy, MessageCircleQuestion, Pencil, Plus, Send, Sparkles, Target, Trash2, TrendingUp, X } from 'lucide-react'
+import { ArrowRight, Check, CheckCircle2, ChevronRight, CircleDashed, Heart, LifeBuoy, MessageCircleQuestion, Pencil, Plus, Send, Sparkles, Target, Trash2, TrendingUp, X } from 'lucide-react'
 import { AI_ERROR_MESSAGE, AIUnavailableError, closeEntry, reflectOnEntry, type ProgressOutcome } from '@/lib/ai/client'
 import { formatLong, weekStart } from '@/lib/dates'
 import { createGoal, deleteEntry, markGoalHandled, removeCheckin, saveAnswers, saveLearning, toggleFavorite } from '@/lib/db'
@@ -146,7 +146,8 @@ export function EntryView({ entry, data, navigate, notify }: { entry?: Entry; da
       <div className="analysis-card reply closing"><b><Sparkles size={13} /> Mentax cierra el día</b><p>{entry.closing.comentario}</p></div>
       {entry.closing.ayudaProfesional && entry.closing.ayudaProfesional !== r?.ayudaProfesional && <div className="help-card"><LifeBuoy size={18} /><p>{entry.closing.ayudaProfesional}</p></div>}
       {entry.closing.aprendizaje && <div className="analysis-card"><b>Aprendizaje del día</b><p>{entry.closing.aprendizaje}</p></div>}
-      {entry.closing.aprendizaje && <Button className="full-button" disabled={learningSaved} onClick={async () => { await saveLearning(entry.closing!.aprendizaje, entry.id); notify('Aprendizaje guardado') }}>{learningSaved ? 'Aprendizaje guardado' : 'Guardar aprendizaje'} <Check size={16} /></Button>}
+      {entry.closing.aprendizaje && <Button variant="soft" className="full-button" disabled={learningSaved} onClick={async () => { await saveLearning(entry.closing!.aprendizaje, entry.id); notify('Aprendizaje guardado') }}>{learningSaved ? 'Aprendizaje guardado' : 'Guardar aprendizaje'} <Check size={16} /></Button>}
+      <Button className="full-button" onClick={() => navigate(entry.date === data.today ? 'home' : 'diary')}>{entry.date === data.today ? 'Terminar el día' : 'Volver al diario'} <ArrowRight size={16} /></Button>
     </>}
 
     {error && <div className="notice-card"><p>{error}</p>{canRetry && <Button variant="soft" onClick={stage === 'written' ? reflect : sendAnswers}>Reintentar</Button>}</div>}
